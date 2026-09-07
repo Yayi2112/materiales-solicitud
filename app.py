@@ -3,7 +3,7 @@ import pandas as pd
 from PIL import Image
 from io import BytesIO
 import numpy as np
-from reportlab.lib.pagesizes import letter
+from reportlab.lib.pagesizes import letter, landscape
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
@@ -91,7 +91,11 @@ if st.session_state.rol_actual == "Administrador":
 
                     df = pd.read_excel(uploaded_file, sheet_name=hoja_usada, header=header_row)
 
+                # Limpieza de columnas completamente vacías
                 df = df.dropna(how='all').dropna(how='all', axis=1)
+                
+                # Eliminar columnas sin nombre por defecto
+                df = df.loc[:, ~df.columns.astype(str).str.contains('^Unnamed')]
 
                 if 'Verificado' not in df.columns:
                     df['Verificado'] = False
@@ -143,7 +147,7 @@ else:
 
         st.session_state.solicitudes[solicitud_seleccionada]["data"] = edited_df
 
-        # Avance
+        # Avance de verificación
         total_items = len(edited_df)
         items_verificados = edited_df['Verificado'].sum() if 'Verificado' in edited_df.columns else 0
         porcentaje = int((items_verificados / total_items) * 100) if total_items > 0 else 0
@@ -181,28 +185,29 @@ else:
         st.divider()
         if st.button("📄 Generar Reporte PDF", key=f"pdf_{solicitud_seleccionada}"):
             buffer = BytesIO()
+            # Formato apaisado (landscape) para acomodar todas las columnas de Excel adecuadamente
             doc = SimpleDocTemplate(
-                buffer, pagesize=letter, rightMargin=20, leftMargin=20, topMargin=25, bottomMargin=25
+                buffer, pagesize=landscape(letter), rightMargin=20, leftMargin=20, topMargin=25, bottomMargin=25
             )
             story = []
             styles = getSampleStyleSheet()
 
             # Título principal
             title_style = ParagraphStyle(
-                'TitleStyle', parent=styles['Heading1'], fontSize=15, leading=18,
+                'TitleStyle', parent=styles['Heading1'], fontSize=16, leading=20,
                 textColor=colors.HexColor("#003366"), alignment=1
             )
-            story.append(Paragraph(f"REPORTE DE RECEPCIÓN DE MATERIALES - N° {solicitud_seleccionada}", title_style))
+            story.append(Paragraph(f"REPORTE DE RECEPCIÓN DE MATERIALES - SOLICITUD N° {solicitud_seleccionada}", title_style))
             story.append(Spacer(1, 15))
 
             # Estilos de celdas
-            header_style = ParagraphStyle('HeaderStyle', parent=styles['Normal'], fontSize=8, leading=9, fontName="Helvetica-Bold", textColor=colors.whitesmoke, alignment=1)
-            cell_style = ParagraphStyle('CellStyle', parent=styles['Normal'], fontSize=7.5, leading=9, fontName="Helvetica")
+            header_style = ParagraphStyle('HeaderStyle', parent=styles['Normal'], fontSize=8.5, leading=10, fontName="Helvetica-Bold", textColor=colors.whitesmoke, alignment=1)
+            cell_style = ParagraphStyle('CellStyle', parent=styles['Normal'], fontSize=8, leading=10, fontName="Helvetica", alignment=1)
 
-            # Construir dinámicamente las columnas para el PDF
+            # Preparación de columnas
             cols_df = list(edited_df.columns)
             
-            # Encabezados de tabla
+            # Encabezados de la tabla
             header_row = [Paragraph(str(c), header_style) for c in cols_df]
             tabla_data = [header_row]
 
@@ -220,9 +225,9 @@ else:
                     row_cells.append(Paragraph(text_val, cell_style))
                 tabla_data.append(row_cells)
 
-            # Cálculo de anchos proporcionales
+            # Ancho disponible en paisaje: ~750pt
             num_cols = len(cols_df)
-            col_width = 550 / num_cols if num_cols > 0 else 500
+            col_width = 750 / num_cols if num_cols > 0 else 750
             
             t = Table(tabla_data, colWidths=[col_width] * num_cols)
             t.setStyle(TableStyle([
@@ -230,63 +235,74 @@ else:
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
                 ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
                 ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-                ('TOPPADDING', (0, 0), (-1, -1), 4),
-                ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+                ('TOPPADDING', (0, 0), (-1, -1), 5),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
             ]))
             story.append(t)
-            story.append(Spacer(1, 20))
+            story.append(Spacer(1, 25))
 
-            # --- SECCIÓN DE FOTO DE EVIDENCIA Y FIRMAS EN PDF ---
-            firmas_data = []
+            # --- EXTRACCIÓN SEGURA DE IMÁGENES Y FIRMAS ---
+            img_foto, img_rev, img_bod = None, None, None
 
-            # 1. Procesar foto
-            img_foto = None
+            # Foto
             if foto is not None:
-                img_f = Image.open(foto)
-                f_buffer = BytesIO()
-                img_f.save(f_buffer, format='PNG')
-                f_buffer.seek(0)
-                img_foto = RLImage(f_buffer, width=150, height=100)
+                try:
+                    img_f = Image.open(foto)
+                    f_buffer = BytesIO()
+                    img_f.save(f_buffer, format='PNG')
+                    f_buffer.seek(0)
+                    img_foto = RLImage(f_buffer, width=160, height=100)
+                except Exception:
+                    pass
 
-            # 2. Procesar Firma Supervisor
-            img_rev = None
-            if canvas_rev.image_data is not None and np.any(canvas_rev.image_data[:, :, 3] > 0):
-                rev_arr = canvas_rev.image_data.astype('uint8')
-                img_r = Image.fromarray(rev_arr)
-                r_buffer = BytesIO()
-                img_r.save(r_buffer, format='PNG')
-                r_buffer.seek(0)
-                img_rev = RLImage(r_buffer, width=150, height=80)
+            # Firma Supervisor
+            try:
+                if canvas_rev is not None and canvas_rev.image_data is not None:
+                    arr_rev = canvas_rev.image_data.astype('uint8')
+                    if np.any(arr_rev[:, :, 3] > 0): # Verificar si contiene trazos dibujados
+                        img_r = Image.fromarray(arr_rev)
+                        r_buffer = BytesIO()
+                        img_r.save(r_buffer, format='PNG')
+                        r_buffer.seek(0)
+                        img_rev = RLImage(r_buffer, width=160, height=80)
+            except Exception:
+                pass
 
-            # 3. Procesar Firma Bodega
-            img_bod = None
-            if canvas_bod.image_data is not None and np.any(canvas_bod.image_data[:, :, 3] > 0):
-                bod_arr = canvas_bod.image_data.astype('uint8')
-                img_b = Image.fromarray(bod_arr)
-                b_buffer = BytesIO()
-                img_b.save(b_buffer, format='PNG')
-                b_buffer.seek(0)
-                img_bod = RLImage(b_buffer, width=150, height=80)
+            # Firma Bodega
+            try:
+                if canvas_bod is not None and canvas_bod.image_data is not None:
+                    arr_bod = canvas_bod.image_data.astype('uint8')
+                    if np.any(arr_bod[:, :, 3] > 0): # Verificar si contiene trazos dibujados
+                        img_b = Image.fromarray(arr_bod)
+                        b_buffer = BytesIO()
+                        img_b.save(b_buffer, format='PNG')
+                        b_buffer.seek(0)
+                        img_bod = RLImage(b_buffer, width=160, height=80)
+            except Exception:
+                pass
 
-            # Tabla para firmas y fotos organizadas
+            # Generar Cuadro de Evidencia y Firmas al Final
+            lbl_style = ParagraphStyle('LblStyle', parent=styles['Normal'], fontSize=9, leading=11, fontName="Helvetica-Bold", alignment=1)
+            
             firma_titles = [
-                Paragraph("<b>Fotografía Respaldo</b>", cell_style),
-                Paragraph("<b>Firma Supervisor / Revisor</b>", cell_style),
-                Paragraph("<b>Firma Entrega / Bodega</b>", cell_style)
+                Paragraph("<b>Fotografía de Respaldo</b>", lbl_style),
+                Paragraph("<b>Firma Supervisor / Revisor</b>", lbl_style),
+                Paragraph("<b>Firma Entrega / Bodega</b>", lbl_style)
             ]
             firma_images = [
-                img_foto if img_foto else Paragraph("Sin foto", cell_style),
-                img_rev if img_rev else Paragraph("Sin firma", cell_style),
-                img_bod if img_bod else Paragraph("Sin firma", cell_style)
+                img_foto if img_foto else Paragraph("<i>Sin foto adjunta</i>", cell_style),
+                img_rev if img_rev else Paragraph("<i>Sin firma</i>", cell_style),
+                img_bod if img_bod else Paragraph("<i>Sin firma</i>", cell_style)
             ]
 
-            tabla_firmas = Table([firma_titles, firma_images], colWidths=[180, 180, 180])
+            tabla_firmas = Table([firma_titles, firma_images], colWidths=[240, 240, 240])
             tabla_firmas.setStyle(TableStyle([
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
                 ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
                 ('GRID', (0, 0), (-1, -1), 0.5, colors.lightgrey),
                 ('TOPPADDING', (0, 0), (-1, -1), 6),
                 ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#F0F2F6"))
             ]))
 
             story.append(tabla_firmas)
